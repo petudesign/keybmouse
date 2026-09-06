@@ -1,4 +1,4 @@
-# Keybmouse 0.2
+# Keybmouse 0.2.1
 
 **Keskeneräinen prototyyppi — kehitys jatkuu.** Tämä repo säilyttää nykyisen lähdekoodin, asetusten toteutuksen ja testit. Kyseessä ei ole valmis julkaisu.
 
@@ -6,14 +6,14 @@ Kevyt Windows-ohjelma, jolla hiirtä ohjataan näppäimistöltä. Rust-ydin, nat
 
 ## Käynnistä
 
-Nykyisessä paikallisessa kehityskansiossa voit avata **Keybmouse-0.2.exe**-tiedoston kaksoisnapsauttamalla. PowerShelliä tai Rustia ei tarvita valmiin exe-tiedoston käyttöön. Sama koonti löytyy myös `target\release\keybmouse.exe`-polusta.
+Nykyisessä paikallisessa kehityskansiossa voit avata **Keybmouse-0.2.1.exe**-tiedoston kaksoisnapsauttamalla. PowerShelliä tai Rustia ei tarvita valmiin exe-tiedoston käyttöön. Sama koonti löytyy myös `target\release\keybmouse.exe`-polusta.
 
 Exe-tiedostot ja paikallinen työkaluketju eivät kuulu tähän repoon. Uudella koneella kloonaa repo, asenna vakaa Rust ja Windowsin C++ build tools / SDK ja suorita `cargo build --release`. Käynnistä sitten `target\release\keybmouse.exe`.
 
-- **Tallenna** tarkistaa asetukset, tallentaa ne ja ottaa ne käyttöön.
+- **Tallenna muutokset** tarkistaa asetukset, tallentaa ne ja ottaa ne käyttöön.
 - **Palauta oletukset** täyttää lomakkeen oletuksilla; paina Tallenna ottaaksesi ne käyttöön.
 - **Ohjaus käytössä** keskeyttää tai jatkaa ohjausta heti. Tauko on istuntokohtainen.
-- **Taustalle** ja ikkunan X piilottavat ikkunan ilmoitusalueelle. Ohjelma jatkaa toimintaansa.
+- **Piilota taustalle** ja ikkunan X piilottavat ikkunan ilmoitusalueelle. Ohjelma jatkaa toimintaansa.
 - Napsauta ilmoitusalueen Keybmouse-kuvaketta avataksesi asetukset. Oikean painikkeen valikossa ovat asetukset, ohjauksen keskeytys ja **Lopeta**.
 - **Lopeta** sulkee ohjelman ja vapauttaa sen painamat hiiren painikkeet.
 
@@ -35,7 +35,7 @@ Aktivointinäppäimen vapautus lopettaa liikkeen, vierityksen ja raahauksen. Jo 
 
 Suunnan vaihtaminen säilyttää saavutetun nopeuden. Näppäinten vapautus pysäyttää kursorin heti: ei liukumista. Lyhyt tauko säilyttää nopeuden seuraavaa suuntaa varten (oletus 100 ms). Pidempi tauko tai aktivointinäppäimen vapautus palauttaa hitaan aloituksen. Diagonaalit normalisoidaan ja vastakkaiset suunnat kumoavat toisensa.
 
-Asetuksissa ovat lähtönopeus, enimmäisnopeus, kiihdytys, tarkkuuskerroin, vieritysnopeus ja suunnanvaihdon tauko. Pilkku ja piste hyväksytään desimaalierottimina. Tasaisen nopeuden saa asettamalla lähtö- ja enimmäisnopeuden samoiksi. Nopeus on suhteellisia hiiriliikkeen yksiköitä sekunnissa, kiihdytys yksiköitä/s². Tämä ei muuta fyysisen hiiren DPI:tä. Windowsin omat hiiriasetukset vaikuttavat lopputulokseen.
+Asetuksissa ovat lähtönopeus, enimmäisnopeus, kiihdytys, tarkkuusnopeus prosentteina, vieritysnopeus ja suunnanvaihdon jousto. Esimerkiksi 18 % tarkoittaa 18 prosenttia tavallisesta nopeudesta; tallennusmuoto säilyy yhteensopivana aiemman version kanssa. Pilkku ja piste hyväksytään desimaalierottimina. Tasaisen nopeuden saa asettamalla lähtö- ja enimmäisnopeuden samoiksi. Nopeus on suhteellisia hiiriliikkeen yksiköitä sekunnissa, kiihdytys yksiköitä/s². Tämä ei muuta fyysisen hiiren DPI:tä. Windowsin omat hiiriasetukset vaikuttavat lopputulokseen.
 
 Sidonnoiksi voi valita A–Z, 0–9, F1–F12, nuolinäppäimet, Caps Lockin, Enterin, Spacen, Tabin, Backspacen, Escapen ja vasemman/oikean Shiftin. Jokaisella toiminnolla pitää olla eri näppäin. Näppäinyhdistelmiä tai hiiren lisäpainikkeita ei vielä tueta. Sidonnat ovat loogisia näppäimiä, eivät fyysisiä skannauskoodeja.
 

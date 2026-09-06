@@ -148,3 +148,4 @@ vite.config.ts.timestamp-*
 /rustup-init.exe
 /Keybmouse.exe
 /Keybmouse-0.2.exe
+/Keybmouse-*.exe

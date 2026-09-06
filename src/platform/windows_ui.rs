@@ -13,10 +13,13 @@ const ENABLED: u16 = 5;
 const OPEN: u16 = 6;
 const STATUS: i32 = 7;
 const TRAY: u32 = WM_APP + 1;
-const KEY_LABELS: [&str; 11] = ["Aktivointi (pidä pohjassa)", "Ylös", "Vasemmalle", "Alas", "Oikealle",
-    "Vasen painike / raahaus", "Oikea painike", "Vieritä ylös", "Vieritä alas", "Tarkkuusnäppäin 1", "Tarkkuusnäppäin 2"];
-const VALUE_LABELS: [&str; 6] = ["Lähtönopeus (1–5000)", "Enimmäisnopeus (1–5000)", "Kiihdytys (0–20000)",
-    "Tarkkuuskerroin (0,01–1)", "Vieritys: pykälää/s (0,1–60)", "Suunnanvaihdon tauko: ms (0–300)"];
+const KEY_LABELS: [&str; 11] = ["Aktivointi", "Ylös", "Vasemmalle", "Alas", "Oikealle",
+    "Vasen painike / raahaus", "Oikea painike", "Vieritä ylös", "Vieritä alas", "Tarkkuusnäppäin", "Vaihtoehtoinen näppäin"];
+const VALUE_LABELS: [&str; 6] = ["Lähtönopeus", "Enimmäisnopeus", "Kiihdytys",
+    "Tarkkuusnopeus", "Vieritysnopeus", "Suunnanvaihdon jousto"];
+const VALUE_HINTS: [&str; 6] = ["Nopeus liikkeelle lähdettäessä.", "Yläraja pitkälle liikkeelle.",
+    "Kuinka nopeasti liike kiihtyy.", "Osuus tavallisesta nopeudesta (1–100 %).",
+    "Vierityksen pykälät sekunnissa.", "Nopeus säilyy tämän tauon ajan (0–300 ms)."];
 thread_local! { static EVENTS: RefCell<VecDeque<u16>> = const { RefCell::new(VecDeque::new()) }; }
 fn wide(text: &str) -> Vec<u16> { text.encode_utf16().chain(Some(0)).collect() }
 
@@ -95,6 +98,8 @@ struct SettingsWindow {
     hwnd: HWND,
     font: HFONT,
     heading: HFONT,
+    section_font: HFONT,
+    small_font: HFONT,
     scale: f64,
     tray: bool,
     saved: Config,
@@ -116,7 +121,7 @@ impl SettingsWindow {
             return Err(std::io::Error::last_os_error().into());
         }
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        let mut rect = RECT { left: 0, top: 0, right: (760.0 * scale) as i32, bottom: (620.0 * scale) as i32 };
+        let mut rect = RECT { left: 0, top: 0, right: (820.0 * scale) as i32, bottom: (660.0 * scale) as i32 };
         unsafe { AdjustWindowRectEx(&mut rect, style, 0, WS_EX_CONTROLPARENT); }
         let hwnd = unsafe { CreateWindowExW(WS_EX_CONTROLPARENT, class.as_ptr(), wide("Keybmouse — asetukset").as_ptr(), style,
             CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
@@ -126,33 +131,49 @@ impl SettingsWindow {
             0, 0, 0, DEFAULT_CHARSET as u32, OUT_DEFAULT_PRECIS as u32, CLIP_DEFAULT_PRECIS as u32,
             CLEARTYPE_QUALITY as u32, DEFAULT_PITCH as u32, wide("Segoe UI").as_ptr()) };
         let window = Self { hwnd, font: make_font(15, 400), heading: make_font(25, 600),
+            section_font: make_font(17, 600), small_font: make_font(13, 400),
             scale, tray: false, saved: config, path, enabled: true };
-        window.label("Keybmouse", 28, 22, 400, 36, true)?;
-        window.label("Hiiriohjaus näppäimistöllä", 28, 60, 430, 24, false)?;
+        window.label("Keybmouse", 32, 24, 400, 36, true)?;
+        window.label("Hiiriohjaus näppäimistöllä", 32, 64, 430, 24, false)?;
         window.control("BUTTON", "&Ohjaus käytössä", WS_TABSTOP | BS_AUTOCHECKBOX as u32,
-            530, 30, 200, 30, ENABLED as i32)?;
+            590, 30, 198, 30, ENABLED as i32)?;
         unsafe { SendMessageW(window.item(ENABLED as i32), BM_SETCHECK, BST_CHECKED as usize, 0); }
-        window.label("Näppäinsidonnat", 28, 112, 310, 24, false)?;
-        window.label("Liike ja tarkkuus", 396, 112, 325, 24, false)?;
+        window.text("Näppäimet", 32, 116, 340, 24, window.section_font)?;
+        window.text("Pidä aktivointinäppäintä pohjassa käyttäessäsi hiirtä.", 32, 144, 355, 24, window.small_font)?;
+        window.text("Liikkeen tuntuma", 436, 116, 350, 24, window.section_font)?;
+        window.text("Säädä nopeutta ja tarkkuutta omaan käyttöösi.", 436, 144, 350, 24, window.small_font)?;
+        let key_rows = [184, 226, 254, 282, 310, 352, 380, 408, 436, 478, 506];
         for (i, label) in KEY_LABELS.iter().enumerate() {
-            window.label(label, 28, 152 + i as i32 * 30, 215, 24, false)?;
+            window.label(label, 32, key_rows[i] + 3, 206, 24, false)?;
             let control = window.control("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
-                248, 149 + i as i32 * 30, 116, 300, 100 + i as i32)?;
+                244, key_rows[i], 140, 300, 100 + i as i32)?;
             for key in Key::choices() {
-                unsafe { SendMessageW(control, CB_ADDSTRING, 0, wide(&key.label()).as_ptr() as isize); }
+                let label = match key {
+                    Key::LeftShift => "Vasen Shift".into(), Key::RightShift => "Oikea Shift".into(),
+                    Key::Up => "Nuoli ylös".into(), Key::Down => "Nuoli alas".into(),
+                    Key::Left => "Nuoli vasen".into(), Key::Right => "Nuoli oikea".into(),
+                    Key::Space => "Välilyönti".into(), Key::CapsLock => "Caps Lock".into(),
+                    _ => key.label(),
+                };
+                unsafe { SendMessageW(control, CB_ADDSTRING, 0, wide(&label).as_ptr() as isize); }
             }
         }
         for (i, label) in VALUE_LABELS.iter().enumerate() {
-            window.label(label, 396, 148 + i as i32 * 54, 335, 22, false)?;
+            let y = 184 + i as i32 * 60;
+            window.label(label, 436, y + 3, 196, 24, false)?;
             window.control("EDIT", "", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
-                396, 172 + i as i32 * 54, 335, 27, 200 + i as i32)?;
+                646, y, 98, 27, 200 + i as i32)?;
+            window.text(["/s", "/s", "/s²", "%", "/s", "ms"][i], 753, y + 4, 35, 24, window.small_font)?;
+            window.text(VALUE_HINTS[i], 436, y + 30, 352, 23, window.small_font)?;
         }
-        window.label("Suunnanvaihto säilyttää nopeuden.\nVapautus pysäyttää liikkeen heti.", 28, 497, 336, 44, false)?;
-        window.label("Nopeus säätää kursorin liikettä, ei hiiren DPI:tä.", 396, 497, 340, 44, false)?;
-        window.control("STATIC", "Asetukset ovat käytössä.", 0, 28, 550, 705, 24, STATUS)?;
-        for (text, x, width, id) in [("&Palauta oletukset", 28, 165, DEFAULTS), ("&Lopeta", 204, 90, QUIT),
-            ("&Taustalle", 496, 108, HIDE), ("&Tallenna", 616, 116, SAVE)] {
-            window.control("BUTTON", text, WS_TABSTOP | BS_PUSHBUTTON as u32, x, 580, width, 30, id as i32)?;
+        window.text("Vapauta aktivointinäppäin jatkaaksesi kirjoittamista.", 32, 546, 355, 24, window.small_font)?;
+        window.text("Vapautus pysäyttää kursorin heti. Ei liukumista.", 436, 546, 352, 24, window.small_font)?;
+        window.control("STATIC", "", 0x10 /* SS_ETCHEDHORZ */, 32, 582, 756, 1, -1)?;
+        window.control("STATIC", "Ei tallentamattomia muutoksia.", 0, 32, 593, 756, 24, STATUS)?;
+        for (text, x, width, id) in [("&Palauta oletukset", 32, 156, DEFAULTS), ("&Lopeta", 200, 80, QUIT),
+            ("&Piilota taustalle", 480, 140, HIDE), ("&Tallenna muutokset", 632, 156, SAVE)] {
+            let style = if id == SAVE { BS_DEFPUSHBUTTON } else { BS_PUSHBUTTON };
+            window.control("BUTTON", text, WS_TABSTOP | style as u32, x, 620, width, 32, id as i32)?;
         }
         window.fill(&window.saved);
         Ok(window)
@@ -168,8 +189,11 @@ impl SettingsWindow {
         Ok(control)
     }
     fn label(&self, text: &str, x: i32, y: i32, w: i32, h: i32, heading: bool) -> Result<(), Box<dyn Error>> {
+        self.text(text, x, y, w, h, if heading { self.heading } else { self.font })
+    }
+    fn text(&self, text: &str, x: i32, y: i32, w: i32, h: i32, font: HFONT) -> Result<(), Box<dyn Error>> {
         let control = self.control("STATIC", text, 0, x, y, w, h, -1)?;
-        if heading { unsafe { SendMessageW(control, WM_SETFONT, self.heading as usize, 1); } }
+        unsafe { SendMessageW(control, WM_SETFONT, font as usize, 1); }
         Ok(())
     }
     fn status(&self, text: &str) { unsafe { SetWindowTextW(self.item(STATUS), wide(text).as_ptr()); } }
@@ -181,6 +205,7 @@ impl SettingsWindow {
             }
         }
         for (i, value) in config.values().iter().enumerate() {
+            let value = if i == 3 { value * 100.0 } else { *value };
             unsafe { SetWindowTextW(self.item(200 + i as i32), wide(&value.to_string()).as_ptr()); }
         }
         EVENTS.with(|q| q.borrow_mut().retain(|id| *id < 100));
@@ -200,6 +225,12 @@ impl SettingsWindow {
             let len = unsafe { GetWindowTextW(self.item(200 + i as i32), text.as_mut_ptr(), text.len() as i32) };
             *value = String::from_utf16_lossy(&text[..len as usize]).trim().replace(',', ".").parse()
                 .map_err(|_| format!("{}: kirjoita numero.", VALUE_LABELS[i]))?;
+            if i == 3 {
+                if !value.is_finite() || !(1.0..=100.0).contains(value) {
+                    return Err("Tarkkuusnopeus: kirjoita arvo väliltä 1–100 %.".into());
+                }
+                *value /= 100.0;
+            }
         }
         config.validate()?;
         Ok(config)
@@ -245,7 +276,11 @@ impl SettingsWindow {
                 self.saved = config;
                 self.status("Tallennettu. Uudet asetukset ovat käytössä.");
             }
-            DEFAULTS => { self.fill(&Config::default()); self.status("Oletukset palautettu lomakkeelle. Ota käyttöön painamalla Tallenna."); }
+            DEFAULTS => {
+                self.fill(&Config::default());
+                self.status(if self.dirty() { "Oletukset valittu. Ota käyttöön tallentamalla muutokset." }
+                    else { "Oletusasetukset ovat jo käytössä." });
+            }
             HIDE => {
                 if self.tray { unsafe { ShowWindow(self.hwnd, SW_HIDE); } }
                 else { unsafe { ShowWindow(self.hwnd, SW_MINIMIZE); } }
@@ -258,7 +293,8 @@ impl SettingsWindow {
                     SendMessageW(self.item(ENABLED as i32), BM_SETCHECK, usize::from(self.enabled), 0);
                     if self.tray { Shell_NotifyIconW(NIM_MODIFY, &self.notify_data()); }
                 }
-                self.status(if self.enabled { "Ohjaus käytössä. Tallentamattomat muutokset eivät ole vielä käytössä." }
+                self.status(if self.dirty() { "Tallentamattomia muutoksia. Ohjauksen valinta tulee voimaan heti." }
+                    else if self.enabled { "Ohjaus käytössä. Ei tallentamattomia muutoksia." }
                     else { "Ohjaus tauolla. Näppäimistö toimii normaalisti." });
             }
             QUIT => {
@@ -270,7 +306,8 @@ impl SettingsWindow {
                 return Ok(true);
             }
             8 => self.menu(),
-            100..=205 => self.status("Tallentamattomia muutoksia. Ota käyttöön painamalla Tallenna."),
+            100..=205 => self.status(if self.dirty() { "Tallentamattomia muutoksia. Ota käyttöön tallentamalla." }
+                else { "Ei tallentamattomia muutoksia." }),
             _ => {}
         }
         Ok(false)
@@ -282,6 +319,7 @@ impl Drop for SettingsWindow {
         unsafe {
             if self.tray { Shell_NotifyIconW(NIM_DELETE, &self.notify_data()); }
             DestroyWindow(self.hwnd); DeleteObject(self.font); DeleteObject(self.heading);
+            DeleteObject(self.section_font); DeleteObject(self.small_font);
         }
     }
 }
@@ -342,13 +380,15 @@ mod tests {
             // Optional visual QA of this test window only; no input hook is installed.
             unsafe {
                 ShowWindow(window.hwnd, SW_SHOWNOACTIVATE); UpdateWindow(window.hwnd);
+                RedrawWindow(window.hwnd, null_mut(), null_mut(), RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
                 let mut rect: RECT = std::mem::zeroed(); GetWindowRect(window.hwnd, &mut rect);
                 let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
                 let screen = GetDC(window.hwnd);
                 let dc = CreateCompatibleDC(screen);
                 let bitmap = CreateCompatibleBitmap(screen, width, height);
                 let old = SelectObject(dc, bitmap);
-                assert_ne!(windows_sys::Win32::Storage::Xps::PrintWindow(window.hwnd, dc, 2), 0);
+                SendMessageW(window.hwnd, WM_PRINT, dc as usize,
+                    (PRF_CLIENT | PRF_NONCLIENT | PRF_CHILDREN | PRF_ERASEBKGND) as isize);
                 SelectObject(dc, old);
                 let stride = (width as usize * 3 + 3) & !3;
                 let mut pixels = vec![0u8; stride * height as usize];
@@ -368,6 +408,11 @@ mod tests {
         }
         let (sender, receiver) = mpsc::channel();
         assert_eq!(window.read().unwrap(), Config::default());
+        unsafe { SetWindowTextW(window.item(203), wide("25").as_ptr()); }
+        assert_eq!(window.read().unwrap().precision_multiplier, 0.25);
+        unsafe { SetWindowTextW(window.item(203), wide("101").as_ptr()); }
+        assert!(window.read().unwrap_err().contains("1–100 %"));
+        window.fill(&Config::default());
         let mut changed = Config::default(); changed.activation = Key::Function(8); changed.base_speed = 220.0;
         changed.direction_grace_ms = 75.0;
         window.fill(&changed); assert!(window.dirty());
