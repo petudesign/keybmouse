@@ -83,7 +83,7 @@ impl PointerOutput for WindowsPointer {
     }
 }
 
-fn translate(vk: u32) -> Option<Key> {
+pub(crate) fn translate(vk: u32) -> Option<Key> {
     match vk {
         0x41..=0x5a => Some(Key::Letter(char::from_u32(vk)?)),
         0x14 => Some(Key::CapsLock), 0x0d => Some(Key::Enter), 0x20 => Some(Key::Space),

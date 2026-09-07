@@ -4,13 +4,21 @@ pub enum Key {
     Tab, Backspace, Escape, Up, Down, Left, Right,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationMode { Hold, Toggle }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragMode { Hold, Toggle }
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub activation: Key,
+    pub activation_mode: ActivationMode,
     /// Up, left, down, right.
     pub movement: [Key; 4],
     /// Left, right mouse button.
     pub clicks: [Key; 2],
+    pub drag_mode: DragMode,
     /// Up, down.
     pub scroll: [Key; 2],
     pub precision: [Key; 2],
@@ -27,8 +35,10 @@ impl Default for Config {
         use Key::*;
         Self {
             activation: CapsLock,
+            activation_mode: ActivationMode::Hold,
             movement: [Letter('W'), Letter('A'), Letter('S'), Letter('D')],
             clicks: [Enter, Space],
+            drag_mode: DragMode::Hold,
             scroll: [Letter('Q'), Letter('E')],
             precision: [LeftShift, RightShift],
             base_speed: 110.0,
@@ -97,7 +107,9 @@ impl Config {
         Ok(())
     }
     pub fn encode(&self) -> String {
-        let mut lines = vec!["version=1".to_string()];
+        let mut lines = vec!["version=2".to_string(),
+            format!("activation_mode={}", match self.activation_mode { ActivationMode::Hold => "hold", ActivationMode::Toggle => "toggle" }),
+            format!("drag_mode={}", match self.drag_mode { DragMode::Hold => "hold", DragMode::Toggle => "toggle" })];
         for (i, key) in self.bindings().iter().enumerate() { lines.push(format!("key{i}={}", key.label())); }
         for (name, value) in [
             ("base_speed", self.base_speed), ("max_speed", self.max_speed), ("acceleration", self.acceleration),
@@ -112,8 +124,19 @@ impl Config {
             let (key, value) = line.split_once('=').ok_or("Virheellinen asetusrivi.")?;
             if entries.insert(key.trim(), value.trim()).is_some() { return Err("Asetus esiintyy kahdesti.".into()); }
         }
-        if entries.remove("version") != Some("1") { return Err("Tuntematon asetustiedoston versio.".into()); }
+        let version = entries.remove("version").ok_or("Asetustiedoston versio puuttuu.")?;
+        if version != "1" && version != "2" { return Err("Tuntematon asetustiedoston versio.".into()); }
         let mut config = Self::default();
+        if version == "2" {
+            config.activation_mode = match entries.remove("activation_mode").ok_or("Aktivointitila puuttuu.")? {
+                "hold" => ActivationMode::Hold, "toggle" => ActivationMode::Toggle,
+                _ => return Err("Tuntematon aktivointitila.".into()),
+            };
+            config.drag_mode = match entries.remove("drag_mode").ok_or("Raahaustila puuttuu.")? {
+                "hold" => DragMode::Hold, "toggle" => DragMode::Toggle,
+                _ => return Err("Tuntematon raahaustila.".into()),
+            };
+        }
         let mut bindings = config.bindings();
         for (i, key) in bindings.iter_mut().enumerate() {
             *key = Key::parse(entries.remove(format!("key{i}").as_str()).ok_or("Näppäinsidonta puuttuu.")?)?;
@@ -139,11 +162,22 @@ mod tests {
     #[test]
     fn settings_round_trip_and_reject_invalid_data() {
         let mut config = Config::default(); config.activation = Key::Function(8);
+        config.activation_mode = ActivationMode::Toggle;
+        config.drag_mode = DragMode::Toggle;
         config.base_speed = 200.0;
         assert_eq!(Config::decode(&config.encode()).unwrap(), config);
         assert!(Config::decode(&config.encode().replace("base_speed=200", "base_speed=NaN")).is_err());
         assert!(Config::decode(&(config.encode() + "max_speed=100\n")).is_err());
         assert!(Config::decode(&config.encode().replace("key1=W", "key1=Enter")).is_err());
         config.base_speed = 2000.0; assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn version_one_settings_load_with_safe_hold_defaults() {
+        let config = Config::default();
+        let legacy = config.encode().replace("version=2", "version=1")
+            .lines().filter(|line| !line.starts_with("activation_mode=") && !line.starts_with("drag_mode="))
+            .collect::<Vec<_>>().join("\n") + "\n";
+        assert_eq!(Config::decode(&legacy).unwrap(), config);
     }
 }

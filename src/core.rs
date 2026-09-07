@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use crate::config::{Config, Key};
+use crate::config::{ActivationMode, Config, DragMode, Key};
 
 pub trait PointerOutput {
     fn move_by(&mut self, x: i32, y: i32);
@@ -21,6 +21,7 @@ pub struct Engine<P: PointerOutput> {
     captured: HashSet<Key>,
     pressed: HashSet<Key>,
     buttons: [bool; 2],
+    drag_locked: bool,
     speed: f64,
     idle_seconds: f64,
     remainder: [f64; 2],
@@ -34,7 +35,7 @@ pub struct Engine<P: PointerOutput> {
 impl<P: PointerOutput> Engine<P> {
     pub fn new(config: Config, pointer: P, debug: bool) -> Self {
         Self { config, pointer, active: false, enabled: true, physical: HashSet::new(),
-            captured: HashSet::new(), pressed: HashSet::new(), buttons: [false; 2],
+            captured: HashSet::new(), pressed: HashSet::new(), buttons: [false; 2], drag_locked: false,
             speed: 0.0, idle_seconds: 0.0, remainder: [0.0; 2], scroll_remainder: 0.0,
             direction: (0, 0), scroll_direction: 0, debug, logs: Vec::new() }
     }
@@ -60,6 +61,7 @@ impl<P: PointerOutput> Engine<P> {
     pub fn reset(&mut self) {
         if self.active { self.log("mouse layer deactivated".into()); }
         self.active = false;
+        self.drag_locked = false;
         self.pressed.clear();
         self.update();
         self.speed = 0.0;
@@ -71,7 +73,9 @@ impl<P: PointerOutput> Engine<P> {
 
     fn update(&mut self) {
         for i in 0..2 {
-            let down = self.active && self.pressed.contains(&self.config.clicks[i]);
+            let down = self.active && if i == 0 && self.config.drag_mode == DragMode::Toggle {
+                self.drag_locked
+            } else { self.pressed.contains(&self.config.clicks[i]) };
             if down != self.buttons[i] {
                 self.pointer.button(i, down);
                 self.buttons[i] = down;
@@ -147,9 +151,17 @@ impl<P: PointerOutput> InputListener for Engine<P> {
         if key == self.config.activation && self.enabled {
             if down && fresh {
                 self.captured.insert(key);
-                self.active = true;
-                self.log("mouse layer activated".into());
-            } else if !down { self.captured.remove(&key); self.reset(); }
+                match self.config.activation_mode {
+                    ActivationMode::Hold => { self.active = true; self.log("mouse layer activated".into()); }
+                    ActivationMode::Toggle => {
+                        if self.active { self.reset(); self.log("mouse layer deactivated".into()); }
+                        else { self.active = true; self.log("mouse layer activated".into()); }
+                    }
+                }
+            } else if !down {
+                self.captured.remove(&key);
+                if self.config.activation_mode == ActivationMode::Hold { self.reset(); }
+            }
             return true;
         }
         let mapped = self.config.movement.contains(&key) || self.config.clicks.contains(&key)
@@ -157,7 +169,10 @@ impl<P: PointerOutput> InputListener for Engine<P> {
         let mut suppress = self.captured.contains(&key);
         if down && fresh && self.active && mapped {
             self.captured.insert(key);
-            self.pressed.insert(key);
+            if key == self.config.clicks[0] && self.config.drag_mode == DragMode::Toggle {
+                self.drag_locked = !self.drag_locked;
+                self.log(format!("drag {}", if self.drag_locked { "locked" } else { "unlocked" }));
+            } else { self.pressed.insert(key); }
             suppress = true;
         } else if !down {
             self.captured.remove(&key);
@@ -331,5 +346,31 @@ mod tests {
         assert!(e.key(CapsLock, false)); assert!(e.key(Enter, false));
         assert!(!e.key(CapsLock, true));
         assert!(e.key(Key::Function(8), true)); assert!(e.active);
+    }
+
+    #[test]
+    fn toggle_activation_does_not_require_holding_the_activation_key() {
+        let mut e = engine();
+        e.config.activation_mode = ActivationMode::Toggle;
+        e.key(CapsLock, true); e.key(CapsLock, false);
+        assert!(e.active);
+        e.key(Letter('D'), true); advance(&mut e, 20); e.key(Letter('D'), false);
+        assert!(e.pointer.x > 0);
+        e.key(CapsLock, true); e.key(CapsLock, false);
+        assert!(!e.active);
+        let x = e.pointer.x; advance(&mut e, 20); assert_eq!(e.pointer.x, x);
+    }
+
+    #[test]
+    fn toggle_drag_keeps_left_button_down_until_second_press() {
+        let mut e = engine();
+        e.config.activation_mode = ActivationMode::Toggle;
+        e.config.drag_mode = DragMode::Toggle;
+        e.key(CapsLock, true); e.key(CapsLock, false);
+        e.key(Enter, true); e.key(Enter, false);
+        assert_eq!(e.pointer.buttons, [(0, true)]);
+        e.key(Letter('D'), true); advance(&mut e, 20); e.key(Letter('D'), false);
+        e.key(Enter, true); e.key(Enter, false);
+        assert_eq!(e.pointer.buttons, [(0, true), (0, false)]);
     }
 }

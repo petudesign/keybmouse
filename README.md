@@ -16,6 +16,8 @@ Exe-tiedostot ja paikallinen työkaluketju eivät kuulu tähän repoon. Uudella 
 - **Piilota taustalle** ja ikkunan X piilottavat ikkunan ilmoitusalueelle. Ohjelma jatkaa toimintaansa.
 - Napsauta ilmoitusalueen Keybmouse-kuvaketta avataksesi asetukset. Oikean painikkeen valikossa ovat asetukset, ohjauksen keskeytys ja **Lopeta**.
 - **Lopeta** sulkee ohjelman ja vapauttaa sen painamat hiiren painikkeet.
+- **Perusasetukset** näyttää nykyiset sidonnat värillisessä näppäimistökartassa sekä activation- ja drag-tilat.
+- **Liikkeen tuntuma** sisältää nopeuden, kiihtyvyyden, tarkkuuden ja vierityksen säädöt omassa näkymässään.
 
 ## Oletusohjaus
 
@@ -30,6 +32,21 @@ Pidä **Caps Lock** pohjassa:
 | Kumpi tahansa Shift | Tarkkuustila |
 
 Aktivointinäppäimen vapautus lopettaa liikkeen, vierityksen ja raahauksen. Jo kaapatut näppäimet pysyvät kaapattuina fyysiseen vapautukseen asti, jotta Enter tai kirjaimet eivät vuoda kirjoittamiseen. Caps Lock ei vaihda kirjainkokoa ohjelman ollessa käytössä oletussidonnalla; aikaisempi kirjainkokotila säilyy.
+
+## Yhden käden käyttö
+
+Asetuksissa **Aktivointitila → Vaihtokytkin (Toggle)** aktivoi hiiritilan yhdellä painalluksella ja poistaa sen seuraavalla. Aktivointinäppäintä ei tarvitse pitää pohjassa muiden näppäinten aikana.
+
+**Raahaustila → Lukitse painamalla (Toggle)** muuttaa vasemman painikkeen painalluksen kaksivaiheiseksi: ensimmäinen painallus ottaa raahauksen käyttöön ja toinen vapauttaa painikkeen. Liikkuminen, klikkaus ja vieritys voidaan siten tehdä yhdellä kädellä ilman aktivointi- tai drag-chordia. Oikea painike ja tarkkuusnäppäin ovat tässä versiossa edelleen hold-toimintoja.
+
+Yhden käden testilista:
+
+- valitse Toggle-aktivointi ja testaa selain, ikkunan vaihto sekä asetusten muokkaus yhdellä kädellä
+- testaa tekstin valinta: Toggle-drag päälle, liikuta, Toggle-drag pois
+- testaa drag & drop ja vieritys ilman toisen käden apua
+- kirjaa erikseen, jos nykyinen näppäinsijoittelu vaatii sormien venyttämistä; kaikki sidonnat voi vaihtaa toiminnolle sopiviksi
+
+Vielä tietoisesti avoimeksi jäävät vasemman ja oikean käden valmiit presetit sekä Precision moden Toggle-versio. Näiden oletusnäppäimet kannattaa valita oikealla laitteella tehtyjen yhden käden testien perusteella, ei olettamalla WASD-asettelua.
 
 ## Liikkeen tuntuma
 

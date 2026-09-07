@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::VecDeque, error::Error, io::Write, mem::si
     path::{Path, PathBuf}, ptr::null_mut, sync::mpsc, time::Duration};
 use windows_sys::Win32::{Foundation::*, Graphics::Gdi::*, Storage::FileSystem::*,
     System::LibraryLoader::GetModuleHandleW, UI::{Controls::*, HiDpi::*, Shell::*, WindowsAndMessaging::*}};
-use crate::config::{Config, Key};
+use crate::config::{ActivationMode, Config, DragMode, Key};
 use super::windows::{self, Control};
 
 const SAVE: u16 = 1;
@@ -12,6 +12,13 @@ const QUIT: u16 = 4;
 const ENABLED: u16 = 5;
 const OPEN: u16 = 6;
 const STATUS: i32 = 7;
+const ACTIVATION_MODE: i32 = 206;
+const DRAG_MODE: i32 = 207;
+const BASIC_TAB: u16 = 10;
+const MOTION_TAB: u16 = 11;
+const KEYBOARD_VIEW: i32 = 210;
+const SLIDER_BASE: i32 = 300;
+const TRACKBAR_GETPOS: u32 = WM_USER;
 const TRAY: u32 = WM_APP + 1;
 const KEY_LABELS: [&str; 11] = ["Aktivointi", "Ylös", "Vasemmalle", "Alas", "Oikealle",
     "Vasen painike / raahaus", "Oikea painike", "Vieritä ylös", "Vieritä alas", "Tarkkuusnäppäin", "Vaihtoehtoinen näppäin"];
@@ -20,24 +27,122 @@ const VALUE_LABELS: [&str; 6] = ["Lähtönopeus", "Enimmäisnopeus", "Kiihdytys"
 const VALUE_HINTS: [&str; 6] = ["Nopeus liikkeelle lähdettäessä.", "Yläraja pitkälle liikkeelle.",
     "Kuinka nopeasti liike kiihtyy.", "Osuus tavallisesta nopeudesta (1–100 %).",
     "Vierityksen pykälät sekunnissa.", "Nopeus säilyy tämän tauon ajan (0–300 ms)."];
-thread_local! { static EVENTS: RefCell<VecDeque<u16>> = const { RefCell::new(VecDeque::new()) }; }
+thread_local! {
+    static EVENTS: RefCell<VecDeque<u16>> = const { RefCell::new(VecDeque::new()) };
+    static KEYBOARD_CONFIG: RefCell<Option<Config>> = const { RefCell::new(None) };
+}
 fn wide(text: &str) -> Vec<u16> { text.encode_utf16().chain(Some(0)).collect() }
+
+fn keyboard_key(name: &str) -> Key {
+    match name {
+        "Tab" => Key::Tab, "Caps" => Key::CapsLock, "Enter" => Key::Enter,
+        "Shift L" => Key::LeftShift, "Shift R" => Key::RightShift, "Space" => Key::Space,
+        "Backspace" => Key::Backspace,
+        letter => Key::Letter(letter.chars().next().unwrap()),
+    }
+}
+
+unsafe extern "system" fn keyboard_view_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    match msg {
+        WM_ERASEBKGND => return 1,
+        WM_PAINT => unsafe {
+            let mut paint: PAINTSTRUCT = std::mem::zeroed();
+            let dc = BeginPaint(hwnd, &mut paint);
+            let mut client: RECT = std::mem::zeroed(); GetClientRect(hwnd, &mut client);
+            let background = CreateSolidBrush(0x00FAFBFD); FillRect(dc, &client, background); DeleteObject(background);
+            let config = KEYBOARD_CONFIG.with(|value| value.borrow().clone()).unwrap_or_default();
+            let font = GetStockObject(DEFAULT_GUI_FONT); let old_font = SelectObject(dc, font);
+            SetBkMode(dc, TRANSPARENT as i32); SetTextColor(dc, 0x00212A38);
+            let rows: [&[(&str, i32)]; 4] = [
+                &[("Tab", 72), ("Q", 54), ("W", 54), ("E", 54), ("R", 54), ("T", 54), ("Y", 54), ("U", 54), ("I", 54), ("O", 54), ("P", 54), ("Backspace", 100)],
+                &[("Caps", 94), ("A", 54), ("S", 54), ("D", 54), ("F", 54), ("G", 54), ("H", 54), ("J", 54), ("K", 54), ("L", 54), ("Enter", 96)],
+                &[("Shift L", 112), ("Z", 54), ("X", 54), ("C", 54), ("V", 54), ("B", 54), ("N", 54), ("M", 54), ("Shift R", 112)],
+                &[("Space", 320)],
+            ];
+            for (row_index, row) in rows.iter().enumerate() {
+                let total: i32 = row.iter().map(|(_, width)| width + 6).sum::<i32>() - 6;
+                let mut x = if row_index == 3 { (client.right - total) / 2 } else { 12 + row_index as i32 * 18 };
+                let y = 10 + row_index as i32 * 38;
+                for (name, width) in *row {
+                    let key = keyboard_key(name);
+                    let color = if key == config.activation { 0x00FFDCC7 }
+                        else if config.movement.contains(&key) { 0x00FFE9D9 }
+                        else if config.clicks.contains(&key) { 0x00DDF3E4 }
+                        else if config.scroll.contains(&key) { 0x00D9EEFF }
+                        else if config.precision.contains(&key) { 0x00F1E5F5 }
+                        else { 0x00F1F3F6 };
+                    let brush = CreateSolidBrush(color); let border = CreatePen(PS_SOLID as i32, 1, 0x00C8D0DA);
+                    let old_brush = SelectObject(dc, brush); let old_pen = SelectObject(dc, border);
+                    RoundRect(dc, x, y, x + *width, y + 32, 6, 6);
+                    SelectObject(dc, old_pen); SelectObject(dc, old_brush); DeleteObject(border); DeleteObject(brush);
+                    let display = match *name { "Shift L" | "Shift R" => "Shift", "Space" => "Välilyönti", other => other };
+                    let text = wide(display); let mut text_rect = RECT { left: x, top: y, right: x + *width, bottom: y + 32 };
+                    DrawTextW(dc, text.as_ptr(), -1, &mut text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    x += *width + 6;
+                }
+            }
+            SelectObject(dc, old_font);
+            EndPaint(hwnd, &paint); return 0;
+        },
+        _ => {}
+    }
+    unsafe { DefWindowProcW(hwnd, msg, w, l) }
+}
 
 unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match msg {
+        WM_ERASEBKGND => return 1,
+        WM_PAINT => {
+            unsafe {
+                let mut paint: PAINTSTRUCT = std::mem::zeroed();
+                let dc = BeginPaint(hwnd, &mut paint);
+                let mut rect: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut rect);
+                let scale = GetDpiForWindow(hwnd) as f64 / 96.0;
+                let px = |value: i32| (value as f64 * scale).round() as i32;
+                let background = CreateSolidBrush(0x00F7FAFE);
+                FillRect(dc, &rect, background);
+                DeleteObject(background);
+                let panel = CreateSolidBrush(0x00FFFFFF);
+                let border = CreatePen(PS_SOLID as i32, 1, 0x00D9E2EF);
+                let old_brush = SelectObject(dc, panel);
+                let old_pen = SelectObject(dc, border);
+                Rectangle(dc, px(20), px(134), px(912), px(674));
+                SelectObject(dc, old_pen);
+                SelectObject(dc, old_brush);
+                DeleteObject(border);
+                DeleteObject(panel);
+                EndPaint(hwnd, &paint);
+                return 0;
+            }
+        }
         WM_CTLCOLORSTATIC => {
             unsafe {
-                SetBkColor(w as HDC, GetSysColor(COLOR_WINDOW));
+                let control = l as HWND;
+                let id = GetDlgCtrlID(control);
+                if (SLIDER_BASE..=SLIDER_BASE + 2).contains(&id) {
+                    SetBkColor(w as HDC, 0x00FFFFFF);
+                    return GetSysColorBrush(COLOR_WINDOW) as LRESULT;
+                }
+                SetBkMode(w as HDC, TRANSPARENT as i32);
                 SetTextColor(w as HDC, GetSysColor(COLOR_WINDOWTEXT));
-                return GetSysColorBrush(COLOR_WINDOW) as LRESULT;
+                return GetStockObject(HOLLOW_BRUSH) as LRESULT;
             }
         }
         WM_COMMAND => {
             let id = (w & 0xffff) as u16;
             let notification = ((w >> 16) & 0xffff) as u32;
             if id < 100 || (id < 200 && notification == CBN_SELCHANGE)
+                || (id >= 206 && id <= 207 && notification == CBN_SELCHANGE)
                 || (id >= 200 && notification == EN_CHANGE) {
                 EVENTS.with(|queue| queue.borrow_mut().push_back(id));
+            }
+            return 0;
+        }
+        WM_HSCROLL => {
+            let id = unsafe { GetDlgCtrlID(l as HWND) };
+            if (SLIDER_BASE..=SLIDER_BASE + 2).contains(&id) {
+                EVENTS.with(|queue| queue.borrow_mut().push_back(id as u16));
             }
             return 0;
         }
@@ -105,6 +210,9 @@ struct SettingsWindow {
     saved: Config,
     path: PathBuf,
     enabled: bool,
+    basic_controls: Vec<HWND>,
+    motion_controls: Vec<HWND>,
+    motion_page: bool,
 }
 
 impl SettingsWindow {
@@ -120,8 +228,15 @@ impl SettingsWindow {
         if unsafe { RegisterClassW(&wc) } == 0 && unsafe { GetLastError() } != ERROR_CLASS_ALREADY_EXISTS {
             return Err(std::io::Error::last_os_error().into());
         }
+        let keyboard_class = wide("KeybmouseKeyboardView");
+        let keyboard_wc = WNDCLASSW { lpfnWndProc: Some(keyboard_view_proc), hInstance: instance,
+            lpszClassName: keyboard_class.as_ptr(), hCursor: unsafe { LoadCursorW(null_mut(), IDC_ARROW) },
+            hbrBackground: (COLOR_WINDOW + 1) as HBRUSH, ..unsafe { std::mem::zeroed() } };
+        if unsafe { RegisterClassW(&keyboard_wc) } == 0 && unsafe { GetLastError() } != ERROR_CLASS_ALREADY_EXISTS {
+            return Err(std::io::Error::last_os_error().into());
+        }
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        let mut rect = RECT { left: 0, top: 0, right: (820.0 * scale) as i32, bottom: (660.0 * scale) as i32 };
+        let mut rect = RECT { left: 0, top: 0, right: (932.0 * scale) as i32, bottom: (820.0 * scale) as i32 };
         unsafe { AdjustWindowRectEx(&mut rect, style, 0, WS_EX_CONTROLPARENT); }
         let hwnd = unsafe { CreateWindowExW(WS_EX_CONTROLPARENT, class.as_ptr(), wide("Keybmouse — asetukset").as_ptr(), style,
             CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
@@ -130,23 +245,32 @@ impl SettingsWindow {
         let make_font = |size, weight| unsafe { CreateFontW(-(size as f64 * scale).round() as i32, 0, 0, 0, weight,
             0, 0, 0, DEFAULT_CHARSET as u32, OUT_DEFAULT_PRECIS as u32, CLIP_DEFAULT_PRECIS as u32,
             CLEARTYPE_QUALITY as u32, DEFAULT_PITCH as u32, wide("Segoe UI").as_ptr()) };
-        let window = Self { hwnd, font: make_font(15, 400), heading: make_font(25, 600),
+        let mut window = Self { hwnd, font: make_font(15, 400), heading: make_font(25, 600),
             section_font: make_font(17, 600), small_font: make_font(13, 400),
-            scale, tray: false, saved: config, path, enabled: true };
-        window.label("Keybmouse", 32, 24, 400, 36, true)?;
-        window.label("Hiiriohjaus näppäimistöllä", 32, 64, 430, 24, false)?;
+            scale, tray: false, saved: config, path, enabled: true,
+            basic_controls: Vec::new(), motion_controls: Vec::new(), motion_page: false };
+        window.label("Keybmouse", 32, 22, 400, 36, true)?;
+        window.label("Hiiriohjaus näppäimistöllä", 32, 62, 430, 24, false)?;
         window.control("BUTTON", "&Ohjaus käytössä", WS_TABSTOP | BS_AUTOCHECKBOX as u32,
-            590, 30, 198, 30, ENABLED as i32)?;
+            704, 30, 198, 30, ENABLED as i32)?;
         unsafe { SendMessageW(window.item(ENABLED as i32), BM_SETCHECK, BST_CHECKED as usize, 0); }
-        window.text("Näppäimet", 32, 116, 340, 24, window.section_font)?;
-        window.text("Pidä aktivointinäppäintä pohjassa käyttäessäsi hiirtä.", 32, 144, 355, 24, window.small_font)?;
-        window.text("Liikkeen tuntuma", 436, 116, 350, 24, window.section_font)?;
-        window.text("Säädä nopeutta ja tarkkuutta omaan käyttöösi.", 436, 144, 350, 24, window.small_font)?;
-        let key_rows = [184, 226, 254, 282, 310, 352, 380, 408, 436, 478, 506];
+        window.control("BUTTON", "Perusasetukset", WS_TABSTOP | BS_AUTORADIOBUTTON as u32 | BS_PUSHLIKE as u32,
+            20, 94, 142, 30, BASIC_TAB as i32)?;
+        window.control("BUTTON", "Liikkeen tuntuma", WS_TABSTOP | BS_AUTORADIOBUTTON as u32 | BS_PUSHLIKE as u32,
+            170, 94, 156, 30, MOTION_TAB as i32)?;
+
+        window.page_text(false, "Näppäimistökartta", 40, 146, 300, 28, window.section_font)?;
+        window.page_text(false, "Värilliset näppäimet ovat käytössä nykyisessä asetuksessa.", 40, 176, 520, 22, window.small_font)?;
+        window.page_control(false, "KeybmouseKeyboardView", "", 0, 40, 204, 852, 164, KEYBOARD_VIEW)?;
+        window.page_text(false, "Liikkuminen ja painikkeet", 40, 390, 360, 24, window.section_font)?;
+        window.page_text(false, "Vieritys ja muunnosnäppäimet", 488, 390, 380, 24, window.section_font)?;
+        let key_rows = [430, 458, 486, 514, 542, 584, 612, 430, 458, 486, 514];
+        let key_sides = [false, false, false, false, false, false, false, true, true, true, true];
         for (i, label) in KEY_LABELS.iter().enumerate() {
-            window.label(label, 32, key_rows[i] + 3, 206, 24, false)?;
-            let control = window.control("COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
-                244, key_rows[i], 140, 300, 100 + i as i32)?;
+            let x = if key_sides[i] { 488 } else { 40 };
+            window.page_text(false, label, x, key_rows[i] + 3, 206, 24, window.font)?;
+            let control = window.page_control(false, "COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+                x + 208, key_rows[i], 170, 300, 100 + i as i32)?;
             for key in Key::choices() {
                 let label = match key {
                     Key::LeftShift => "Vasen Shift".into(), Key::RightShift => "Oikea Shift".into(),
@@ -158,24 +282,47 @@ impl SettingsWindow {
                 unsafe { SendMessageW(control, CB_ADDSTRING, 0, wide(&label).as_ptr() as isize); }
             }
         }
-        for (i, label) in VALUE_LABELS.iter().enumerate() {
-            let y = 184 + i as i32 * 60;
-            window.label(label, 436, y + 3, 196, 24, false)?;
-            window.control("EDIT", "", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
-                646, y, 98, 27, 200 + i as i32)?;
-            window.text(["/s", "/s", "/s²", "%", "/s", "ms"][i], 753, y + 4, 35, 24, window.small_font)?;
-            window.text(VALUE_HINTS[i], 436, y + 30, 352, 23, window.small_font)?;
+        window.page_text(false, "Toimintatavat", 488, 550, 360, 24, window.section_font)?;
+        window.page_text(false, "Aktivointitila", 488, 586, 196, 24, window.font)?;
+        let activation_mode = window.page_control(false, "COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+            696, 582, 178, 300, ACTIVATION_MODE)?;
+        for label in ["Pohjassa (Hold)", "Vaihtokytkin (Toggle)"] {
+            unsafe { SendMessageW(activation_mode, CB_ADDSTRING, 0, wide(label).as_ptr() as isize); }
         }
-        window.text("Vapauta aktivointinäppäin jatkaaksesi kirjoittamista.", 32, 546, 355, 24, window.small_font)?;
-        window.text("Vapautus pysäyttää kursorin heti. Ei liukumista.", 436, 546, 352, 24, window.small_font)?;
-        window.control("STATIC", "", 0x10 /* SS_ETCHEDHORZ */, 32, 582, 756, 1, -1)?;
-        window.control("STATIC", "Ei tallentamattomia muutoksia.", 0, 32, 593, 756, 24, STATUS)?;
+        window.page_text(false, "Raahaustila", 488, 618, 196, 24, window.font)?;
+        let drag_mode = window.page_control(false, "COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+            696, 614, 178, 300, DRAG_MODE)?;
+        for label in ["Pohjassa (Hold)", "Lukitse painamalla (Toggle)"] {
+            unsafe { SendMessageW(drag_mode, CB_ADDSTRING, 0, wide(label).as_ptr() as isize); }
+        }
+
+        window.page_text(true, "Liikkeen tuntuma", 40, 146, 360, 28, window.section_font)?;
+        window.page_text(true, "Säädä hiiren liikkeen nopeutta ja tarkkuutta. Muutokset tulevat käyttöön tallentamalla.",
+            40, 176, 760, 22, window.small_font)?;
+        for (i, label) in VALUE_LABELS.iter().enumerate() {
+            let y = if i < 3 { 226 + i as i32 * 112 } else { 568 + (i as i32 - 3) * 34 };
+            window.page_text(true, label, 64, y + 3, 196, 24, window.font)?;
+            window.page_control(true, "EDIT", "", WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
+                740, y, 112, 27, 200 + i as i32)?;
+            window.page_text(true, ["/s", "/s", "/s²", "%", "/s", "ms"][i], 860, y + 4, 35, 24, window.small_font)?;
+            if i < 3 {
+                window.page_text(true, VALUE_HINTS[i], 64, y + 30, 560, 20, window.small_font)?;
+                let slider = window.page_control(true, "msctls_trackbar32", "", WS_TABSTOP | TBS_HORZ as u32,
+                    64, y + 54, 788, 30, SLIDER_BASE + i as i32)?;
+                let (low, high) = [(1, 5000), (1, 5000), (0, 20000)][i];
+                unsafe { SendMessageW(slider, TBM_SETRANGE, 1, ((high << 16) | low) as isize); }
+            }
+        }
+        window.control("STATIC", "", 0x10 /* SS_ETCHEDHORZ */, 20, 690, 892, 1, -1)?;
+        window.control("STATIC", "Ei tallentamattomia muutoksia.", 0, 20, 704, 560, 24, STATUS)?;
         for (text, x, width, id) in [("&Palauta oletukset", 32, 156, DEFAULTS), ("&Lopeta", 200, 80, QUIT),
             ("&Piilota taustalle", 480, 140, HIDE), ("&Tallenna muutokset", 632, 156, SAVE)] {
             let style = if id == SAVE { BS_DEFPUSHBUTTON } else { BS_PUSHBUTTON };
-            window.control("BUTTON", text, WS_TABSTOP | style as u32, x, 620, width, 32, id as i32)?;
+            let x = match id { DEFAULTS => 20, QUIT => 186, HIDE => 592, SAVE => 744, _ => x };
+            window.control("BUTTON", text, WS_TABSTOP | style as u32, x, 738, width, 32, id as i32)?;
         }
         window.fill(&window.saved);
+        window.set_page(false);
         Ok(window)
     }
 
@@ -188,13 +335,40 @@ impl SettingsWindow {
         unsafe { SendMessageW(control, WM_SETFONT, self.font as usize, 1); }
         Ok(control)
     }
-    fn label(&self, text: &str, x: i32, y: i32, w: i32, h: i32, heading: bool) -> Result<(), Box<dyn Error>> {
+    fn label(&self, text: &str, x: i32, y: i32, w: i32, h: i32, heading: bool) -> Result<HWND, Box<dyn Error>> {
         self.text(text, x, y, w, h, if heading { self.heading } else { self.font })
     }
-    fn text(&self, text: &str, x: i32, y: i32, w: i32, h: i32, font: HFONT) -> Result<(), Box<dyn Error>> {
+    fn text(&self, text: &str, x: i32, y: i32, w: i32, h: i32, font: HFONT) -> Result<HWND, Box<dyn Error>> {
         let control = self.control("STATIC", text, 0, x, y, w, h, -1)?;
         unsafe { SendMessageW(control, WM_SETFONT, font as usize, 1); }
-        Ok(())
+        Ok(control)
+    }
+    fn page_control(&mut self, motion: bool, class: &str, text: &str, style: u32,
+        x: i32, y: i32, w: i32, h: i32, id: i32) -> Result<HWND, Box<dyn Error>> {
+        let control = self.control(class, text, style, x, y, w, h, id)?;
+        if motion { self.motion_controls.push(control); } else { self.basic_controls.push(control); }
+        Ok(control)
+    }
+    fn page_text(&mut self, motion: bool, text: &str, x: i32, y: i32, w: i32, h: i32,
+        font: HFONT) -> Result<HWND, Box<dyn Error>> {
+        let control = self.text(text, x, y, w, h, font)?;
+        if motion { self.motion_controls.push(control); } else { self.basic_controls.push(control); }
+        Ok(control)
+    }
+    fn set_page(&mut self, motion: bool) {
+        self.motion_page = motion;
+        unsafe {
+            for control in &self.basic_controls { ShowWindow(*control, if motion { SW_HIDE } else { SW_SHOW }); }
+            for control in &self.motion_controls { ShowWindow(*control, if motion { SW_SHOW } else { SW_HIDE }); }
+            SendMessageW(self.item(BASIC_TAB as i32), BM_SETCHECK, usize::from(!motion), 0);
+            SendMessageW(self.item(MOTION_TAB as i32), BM_SETCHECK, usize::from(motion), 0);
+        }
+    }
+    fn sync_keyboard(&self) {
+        if let Ok(config) = self.read() {
+            KEYBOARD_CONFIG.with(|value| *value.borrow_mut() = Some(config));
+            unsafe { InvalidateRect(self.item(KEYBOARD_VIEW), null_mut(), 1); }
+        }
     }
     fn status(&self, text: &str) { unsafe { SetWindowTextW(self.item(STATUS), wide(text).as_ptr()); } }
     fn fill(&self, config: &Config) {
@@ -204,10 +378,19 @@ impl SettingsWindow {
                 unsafe { SendMessageW(self.item(100 + i as i32), CB_SETCURSEL, index, 0); }
             }
         }
+        unsafe {
+            SendMessageW(self.item(ACTIVATION_MODE), CB_SETCURSEL,
+                usize::from(config.activation_mode == ActivationMode::Toggle), 0);
+            SendMessageW(self.item(DRAG_MODE), CB_SETCURSEL,
+                usize::from(config.drag_mode == DragMode::Toggle), 0);
+        }
         for (i, value) in config.values().iter().enumerate() {
             let value = if i == 3 { value * 100.0 } else { *value };
             unsafe { SetWindowTextW(self.item(200 + i as i32), wide(&value.to_string()).as_ptr()); }
+            if i < 3 { unsafe { SendMessageW(self.item(SLIDER_BASE + i as i32), TBM_SETPOS, 1, value.round() as isize); } }
         }
+        KEYBOARD_CONFIG.with(|value| *value.borrow_mut() = Some(config.clone()));
+        unsafe { InvalidateRect(self.item(KEYBOARD_VIEW), null_mut(), 1); }
         EVENTS.with(|q| q.borrow_mut().retain(|id| *id < 100));
     }
     fn read(&self) -> Result<Config, String> {
@@ -219,6 +402,16 @@ impl SettingsWindow {
             *key = *choices.get(index as usize).ok_or("Valitse näppäin jokaiselle toiminnolle.")?;
         }
         config.set_bindings(keys);
+        let activation_mode = match unsafe { SendMessageW(self.item(ACTIVATION_MODE), CB_GETCURSEL, 0, 0) } {
+            0 => ActivationMode::Hold, 1 => ActivationMode::Toggle,
+            _ => return Err("Valitse aktivointitila.".into()),
+        };
+        let drag_mode = match unsafe { SendMessageW(self.item(DRAG_MODE), CB_GETCURSEL, 0, 0) } {
+            0 => DragMode::Hold, 1 => DragMode::Toggle,
+            _ => return Err("Valitse raahaustila.".into()),
+        };
+        config.activation_mode = activation_mode;
+        config.drag_mode = drag_mode;
         for (i, value) in [&mut config.base_speed, &mut config.max_speed, &mut config.acceleration,
             &mut config.precision_multiplier, &mut config.scroll_notches_per_second, &mut config.direction_grace_ms].into_iter().enumerate() {
             let mut text = [0u16; 128];
@@ -306,8 +499,30 @@ impl SettingsWindow {
                 return Ok(true);
             }
             8 => self.menu(),
-            100..=205 => self.status(if self.dirty() { "Tallentamattomia muutoksia. Ota käyttöön tallentamalla." }
-                else { "Ei tallentamattomia muutoksia." }),
+            BASIC_TAB => self.set_page(false),
+            MOTION_TAB => self.set_page(true),
+            300..=302 => {
+                let index = id as i32 - SLIDER_BASE;
+                let value = unsafe { SendMessageW(self.item(id as i32), TRACKBAR_GETPOS, 0, 0) };
+                unsafe { SetWindowTextW(self.item(200 + index), wide(&value.to_string()).as_ptr()); }
+                self.status(if self.dirty() { "Tallentamattomia muutoksia. Ota käyttöön tallentamalla." }
+                    else { "Ei tallentamattomia muutoksia." });
+            }
+            100..=207 => {
+                if (200..=202).contains(&id) {
+                    let mut text = [0u16; 128];
+                    let len = unsafe { GetWindowTextW(self.item(id as i32), text.as_mut_ptr(), text.len() as i32) };
+                    if let Ok(value) = String::from_utf16_lossy(&text[..len as usize]).trim().replace(',', ".").parse::<f64>() {
+                        let (low, high) = [(1.0, 5000.0), (1.0, 5000.0), (0.0, 20000.0)][id as usize - 200];
+                        if value.is_finite() && (low..=high).contains(&value) {
+                            unsafe { SendMessageW(self.item(SLIDER_BASE + id as i32 - 200), TBM_SETPOS, 1, value.round() as isize); }
+                        }
+                    }
+                }
+                self.sync_keyboard();
+                self.status(if self.dirty() { "Tallentamattomia muutoksia. Ota käyttöön tallentamalla." }
+                    else { "Ei tallentamattomia muutoksia." });
+            }
             _ => {}
         }
         Ok(false)
@@ -377,18 +592,18 @@ mod tests {
         let path = std::env::temp_dir().join(format!("keybmouse-ui-test-{}.conf", std::process::id()));
         let mut window = SettingsWindow::new(Config::default(), path.clone()).unwrap();
         if let Ok(path) = std::env::var("KEYBMOUSE_UI_SNAPSHOT") {
+            if std::env::var("KEYBMOUSE_UI_PAGE").as_deref() == Ok("motion") { window.set_page(true); }
             // Optional visual QA of this test window only; no input hook is installed.
             unsafe {
                 ShowWindow(window.hwnd, SW_SHOWNOACTIVATE); UpdateWindow(window.hwnd);
                 RedrawWindow(window.hwnd, null_mut(), null_mut(), RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
                 let mut rect: RECT = std::mem::zeroed(); GetWindowRect(window.hwnd, &mut rect);
                 let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
-                let screen = GetDC(window.hwnd);
+                let screen = GetWindowDC(window.hwnd);
                 let dc = CreateCompatibleDC(screen);
                 let bitmap = CreateCompatibleBitmap(screen, width, height);
                 let old = SelectObject(dc, bitmap);
-                SendMessageW(window.hwnd, WM_PRINT, dc as usize,
-                    (PRF_CLIENT | PRF_NONCLIENT | PRF_CHILDREN | PRF_ERASEBKGND) as isize);
+                assert_ne!(BitBlt(dc, 0, 0, width, height, screen, 0, 0, SRCCOPY), 0);
                 SelectObject(dc, old);
                 let stride = (width as usize * 3 + 3) & !3;
                 let mut pixels = vec![0u8; stride * height as usize];
@@ -408,6 +623,12 @@ mod tests {
         }
         let (sender, receiver) = mpsc::channel();
         assert_eq!(window.read().unwrap(), Config::default());
+        assert!(KEYBOARD_CONFIG.with(|value| value.borrow().as_ref() == Some(&Config::default())));
+        window.set_page(true); assert!(window.motion_page);
+        window.set_page(false); assert!(!window.motion_page);
+        unsafe { SendMessageW(window.item(SLIDER_BASE), TBM_SETPOS, 1, 240); }
+        window.handle(SLIDER_BASE as u16, &sender).unwrap();
+        assert_eq!(window.read().unwrap().base_speed, 240.0);
         unsafe { SetWindowTextW(window.item(203), wide("25").as_ptr()); }
         assert_eq!(window.read().unwrap().precision_multiplier, 0.25);
         unsafe { SetWindowTextW(window.item(203), wide("101").as_ptr()); }
